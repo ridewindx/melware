@@ -73,3 +73,54 @@ type Login struct {
 	Username string `form:"username" json:"username" binding:"required"`
 	Password string `form:"password" json:"password" binding:"required"`
 }
+
+func (j *JWT) init() error {
+	return nil
+}
+
+// MiddlewareFunc makes GinJWTMiddleware implement the Middleware interface.
+func (mw *JWT) MiddlewareFunc() mel.Handler {
+	if err := mw.init(); err != nil {
+		return func(c *mel.Context) {
+			mw.unauthorized(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	return func(c *gin.Context) {
+		token, err := mw.parseToken(c)
+
+		if err != nil {
+			mw.unauthorized(c, http.StatusUnauthorized, err.Error())
+			return
+		}
+
+		claims := token.Claims.(jwt.MapClaims)
+
+		id := claims["id"].(string)
+		c.Set("JWT_PAYLOAD", claims)
+		c.Set("userID", id)
+
+		if !mw.Authorizator(id, c) {
+			mw.unauthorized(c, http.StatusForbidden, "You don't have permission to access.")
+			return
+		}
+
+		c.Next()
+		return
+	}
+}
+
+
+func (mw *JWT) unauthorized(c *mel.Context, code int, message string) {
+	if mw.Realm == "" {
+		mw.Realm = "mel jwt"
+	}
+
+	c.Header("WWW-Authenticate", "JWT realm="+mw.Realm)
+	c.Abort()
+
+	mw.Unauthorized(c, code, message)
+
+	return
+}
