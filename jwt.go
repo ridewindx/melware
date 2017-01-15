@@ -43,20 +43,20 @@ type JWT struct {
 	// Required. Option return user id, if so, user id will be stored in Claim Array.
 	Authenticator func(userID string, password string, c *mel.Context) (string, bool)
 
-	// Callback function that should perform the authorization of the authenticated user. Called
-	// only after an authentication success. Must return true on success, false on failure.
-	// Optional, default to success.
+	// Authorizator specifies the callback that should perform the authorization
+	// of the authenticated user.
+	// Must return true on success, false on failure.
+	// Optional. Default to always return success.
 	Authorizator func(userID string, c *gin.Context) bool
 
-	// Callback function that will be called during login.
-	// Using this function it is possible to add additional payload data to the webtoken.
+	// PayloadFunc specifies the callback that will be called during login.
+	// It is useful for adding additional payload data to the token.
 	// The data is then made available during requests via c.Get("JWT_PAYLOAD").
 	// Note that the payload is not encrypted.
-	// The attributes mentioned on jwt.io can't be used as keys for the map.
-	// Optional, by default no additional data will be set.
+	// Optional. By default no additional payload will be added.
 	PayloadFunc func(userID string) map[string]interface{}
 
-	// User can define own Unauthorized func.
+	// Unauthorized specifies the unauthorized function.
 	Unauthorized func(*gin.Context, int, string)
 
 	// TokenLookup is a string in the form of "<source>:<name>" that is used
@@ -67,4 +67,9 @@ type JWT struct {
 	// - "query:<name>"
 	// - "cookie:<name>"
 	TokenLookup string
+}
+
+type Login struct {
+	Username string `form:"username" json:"username" binding:"required"`
+	Password string `form:"password" json:"password" binding:"required"`
 }
