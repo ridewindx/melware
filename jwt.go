@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"errors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -35,13 +36,13 @@ type JWT struct {
 	// MaxRefresh specifies the maximum duration in which the client can refresh its token.
 	// This means that the maximum validity timespan for a token is MaxRefresh + Timeout.
 	// Optional. Defaults to 0 meaning not refreshable.
-	MaxRefresh time.Duration
+	MaxRefresh   time.Duration
 
 	// Authenticator specifies the callback that should perform the authentication
 	// of the user based on userID and password.
 	// Must return true on success, false on failure.
 	// Required. Option return user id, if so, user id will be stored in Claim Array.
-	Authenticator func(userID string, password string, c *mel.Context) (string, bool)
+	Authenticate func(userID string, password string, c *mel.Context) (string, bool)
 
 	// Authorizator specifies the callback that should perform the authorization
 	// of the authenticated user.
@@ -67,6 +68,8 @@ type JWT struct {
 	// - "query:<name>"
 	// - "cookie:<name>"
 	TokenLookup string
+
+	extractToken func(*mel.Context) (string, error)
 }
 
 type Login struct {
@@ -74,35 +77,71 @@ type Login struct {
 	Password string `form:"password" json:"password" binding:"required"`
 }
 
-func (j *JWT) init() error {
-	return nil
-}
+func (j *JWT) init() {
+	parts := strings.Split(j.TokenLookup, ":")
+	key := parts[1]
+	switch parts[0] {
+	case "header":
+		j.extractToken = func(c *mel.Context) (string, error) {
+			authHeader := c.Request.Header.Get(key)
 
-// MiddlewareFunc makes GinJWTMiddleware implement the Middleware interface.
-func (mw *JWT) MiddlewareFunc() mel.Handler {
-	if err := mw.init(); err != nil {
-		return func(c *mel.Context) {
-			mw.unauthorized(c, http.StatusInternalServerError, err.Error())
-			return
+			if len(authHeader) == 0 {
+				return "", errors.New("Empty auth header")
+			}
+
+			parts := strings.SplitN(authHeader, " ", 2)
+			if !(len(parts) == 2 && parts[0] == "Bearer") {
+				return "", errors.New("Invalid auth header")
+			}
+
+			return parts[1], nil
+		}
+	case "query":
+		j.extractToken = func(c *mel.Context) (string, error) {
+			token := c.Query(key)
+
+			if len(token) == 0 {
+				return "", errors.New("Empty query token")
+			}
+
+			return token, nil
+		}
+	case "cookie":
+		j.extractToken = func(c *mel.Context) (string, error) {
+			cookie, _ := c.Cookie(key)
+
+			if len(cookie) == 0 {
+				return "", errors.New("Empty cookie token")
+			}
+
+			return cookie, nil
 		}
 	}
 
+
+	return nil
+}
+
+// Middleware returns a middleware that authorizes tokens.
+func (j *JWT) Middleware() mel.Handler {
+	j.init()
+
 	return func(c *gin.Context) {
-		token, err := mw.parseToken(c)
+		token, err := j.parseToken(c)
 
 		if err != nil {
-			mw.unauthorized(c, http.StatusUnauthorized, err.Error())
+			j.unauthorized(c, http.StatusUnauthorized, err.Error())
 			return
 		}
 
 		claims := token.Claims.(jwt.MapClaims)
 
-		id := claims["id"].(string)
+		userId := claims["id"].(string)
 		c.Set("JWT_PAYLOAD", claims)
-		c.Set("userID", id)
+		c.Set("userID", userId)
 
-		if !mw.Authorizator(id, c) {
-			mw.unauthorized(c, http.StatusForbidden, "You don't have permission to access.")
+		if !j.Authorizator(userId, c) {
+			j.unauthorized(c, http.StatusForbidden, "You don't have permission to access.")
 			return
 		}
 
@@ -111,6 +150,74 @@ func (mw *JWT) MiddlewareFunc() mel.Handler {
 	}
 }
 
+// LoginHandler can be used by clients to get a jwt token.
+// Payload needs to be json in the form of {"username": "USERNAME", "password": "PASSWORD"}.
+// Reply will be of the form {"token": "TOKEN"}.
+func (j *JWT) LoginHandler() mel.Handler {
+	j.init()
+
+	return func(c *mel.Context) {
+		var login Login
+
+		if c.BindJSON(&login) != nil {
+			j.unauthorized(c, http.StatusBadRequest, "Missing username or password")
+			return
+		}
+
+		userID, ok := j.Authenticate(login.Username, login.Password, c)
+		if !ok {
+			j.unauthorized(c, http.StatusUnauthorized, "Invalid Username / Password")
+			return
+		}
+
+		// Create the token
+		token := jwt.New(jwt.GetSigningMethod(j.SigningAlgorithm))
+		claims := token.Claims.(jwt.MapClaims)
+
+		if j.PayloadFunc != nil {
+			for key, value := range j.PayloadFunc(login.Username) {
+				claims[key] = value
+			}
+		}
+
+		if len(userID) == 0 {
+			userID = login.Username
+		}
+
+		expire := time.Now().Add(j.Timeout)
+		claims["id"] = userID
+		claims["exp"] = expire.Unix()
+		claims["iat"] = time.Now().Unix()
+
+		tokenStr, err := token.SignedString(j.Key)
+
+		if err != nil {
+			j.unauthorized(c, http.StatusUnauthorized, "Create JWT token faild")
+			return
+		}
+
+		c.JSON(http.StatusOK, mel.Map{
+			"token":  tokenStr,
+			"expires_at": expire.Format(time.RFC3339),
+		})
+	}
+}
+
+func (j *JWT) parseToken(c *mel.Context) (*jwt.Token, error) {
+	tokenStr, err := j.extractToken(c)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		if jwt.GetSigningMethod(j.SigningAlgorithm) != token.Method {
+			return nil, errors.New("Invalid signing algorithm")
+		}
+
+		return j.Key, nil
+	})
+}
 
 func (mw *JWT) unauthorized(c *mel.Context, code int, message string) {
 	if mw.Realm == "" {
