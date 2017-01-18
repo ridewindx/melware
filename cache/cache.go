@@ -77,7 +77,8 @@ func (cache *Cache) CacheMiddleware(expire time.Duration) mel.Handler {
 func (cache *Cache) Cache(expire time.Duration, handler mel.Handler) mel.Handler {
     return func(c *mel.Context) {
         key := cache.makeKey(c.Request.URL.RequestURI())
-        value, err := cache.Get(key)
+        var r responseCache
+        err := cache.Get(key, &r)
         if err != nil {
             cw := &cachedWriter{
                 ResponseWriter: c.Writer,
@@ -89,7 +90,6 @@ func (cache *Cache) Cache(expire time.Duration, handler mel.Handler) mel.Handler
             handler(c)
             cw.cache()
         } else {
-            r := value.(responseCache)
             c.Status(r.status)
             for k, v := range r.header {
                 c.Writer.Header()[k] = v
