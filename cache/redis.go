@@ -12,6 +12,42 @@ type RedisStore struct {
 	defaultExpiration time.Duration
 }
 
+var _ Store = &MemoryStore{}
+
+func NewRedisStore(host, password string, defaultExpiration time.Duration) *RedisStore {
+	var pool = &redis.Pool{
+		MaxIdle:     5,
+		IdleTimeout: 240 * time.Second,
+		Dial: func() (redis.Conn, error) {
+			// TODO: the redis protocol should probably be made settable
+			c, err := redis.Dial("tcp", host)
+			if err != nil {
+				return nil, err
+			}
+			if len(password) > 0 {
+				if _, err := c.Do("AUTH", password); err != nil {
+					c.Close()
+					return nil, err
+				}
+			} else {
+				if _, err := c.Do("PING"); err != nil {
+					c.Close()
+					return nil, err
+				}
+			}
+			return c, err
+		},
+		// custom connection test method
+		TestOnBorrow: func(c redis.Conn, t time.Time) error {
+			if _, err := c.Do("PING"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+	return &RedisStore{pool, defaultExpiration}
+}
+
 func (c *RedisStore) Get(key string, ptr interface{}) error {
 	conn := c.pool.Get()
 	defer conn.Close()
@@ -52,11 +88,14 @@ func (c *RedisStore) Delete(key string) error {
 	conn := c.pool.Get()
 	defer conn.Close()
 
-	exists, _ := redis.Bool(conn.Do("EXISTS", key))
+	exists, err := redis.Bool(conn.Do("EXISTS", key))
+	if err != nil {
+		return err
+	}
 	if !exists {
 		return nil
 	}
-	_, err := conn.Do("DEL", key)
+	_, err = conn.Do("DEL", key)
 	return err
 }
 
