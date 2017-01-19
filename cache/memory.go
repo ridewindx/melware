@@ -7,10 +7,15 @@ import (
 )
 
 type MemoryStore struct {
-	memory.Cache
+	*memory.Cache
 }
 
 var _ Store = &MemoryStore{}
+
+func NewMemoryStore(defaultExpiration, cleanupInterval time.Duration) *MemoryStore {
+	c := memory.New(defaultExpiration, cleanupInterval)
+	return &MemoryStore{c}
+}
 
 func (c *MemoryStore) Get(key string, ptr interface{}) error {
 	val, ok := c.Cache.Get(key)
@@ -28,6 +33,7 @@ func (c *MemoryStore) Get(key string, ptr interface{}) error {
 }
 
 func (c *MemoryStore) Set(key string, value interface{}, expire time.Duration) error {
+	// go-cache handles DEFAULT and FOREVER correctly
 	c.Cache.Set(key, value, expire)
 	return nil
 }
