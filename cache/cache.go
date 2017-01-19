@@ -8,6 +8,7 @@ import (
     "fmt"
     "net/http"
     "bytes"
+    "log"
 )
 
 type responseCache struct {
@@ -18,14 +19,11 @@ type responseCache struct {
 
 type cachedWriter struct {
     mel.ResponseWriter
-
     key string
     expire time.Duration
-
-    error
-
-    bytes.Buffer
     *Cache
+    error
+    bytes.Buffer
 }
 
 func (w *cachedWriter) Write(bytes []byte) (int, error) {
@@ -38,9 +36,14 @@ func (w *cachedWriter) Write(bytes []byte) (int, error) {
     return size, err
 }
 
+func (w *cachedWriter) WriteString(s string) (int, error) {
+    b := []byte(s)
+    return w.Write(b)
+}
+
 func (w *cachedWriter) cache() {
-    if w.error == nil {
-        // TODO
+    if w.error != nil {
+        log.Printf("Do not cache key %s since: %s", w.key, w.error)
         return
     }
     rc := responseCache{
@@ -50,22 +53,13 @@ func (w *cachedWriter) cache() {
     }
     err := w.Cache.Set(w.key, rc, w.expire)
     if err != nil {
-        // TODO
+        log.Printf("Cache key %s failed: %s", w.key, err)
     }
 }
 
 type Cache struct {
-    Backend
-
     KeyPrefix string
-
     Store
-}
-
-func New(backend Backend) *Cache {
-    return &Cache{
-        Backend: backend,
-    }
 }
 
 func (cache *Cache) CacheMiddleware(expire time.Duration) mel.Handler {
