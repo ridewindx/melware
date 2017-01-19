@@ -5,13 +5,6 @@ import (
     "errors"
 )
 
-type Backend int
-
-const (
-    MEMORY = iota
-    REDIS
-)
-
 const (
     DEFAULT = time.Duration(0)
     FOREVER = time.Duration(-1)
