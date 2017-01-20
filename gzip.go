@@ -29,10 +29,12 @@ func Gzip(level int) mel.Handler {
 		c.Header("Content-Encoding", "gzip")
 		c.Header("Vary", "Accept-Encoding")
 		c.Writer = &gzipWriter{c.Writer, gz}
+
 		defer func() {
 			c.Header("Content-Length", "0")
 			gz.Close()
 		}()
+
 		c.Next()
 	}
 }
@@ -43,10 +45,16 @@ type gzipWriter struct {
 }
 
 func (g *gzipWriter) WriteString(s string) (int, error) {
+	if !g.ResponseWriter.Written() {
+		g.ResponseWriter.WriteHeader(g.ResponseWriter.Status())
+	}
 	return g.writer.Write([]byte(s))
 }
 
 func (g *gzipWriter) Write(data []byte) (int, error) {
+	if !g.ResponseWriter.Written() {
+		g.ResponseWriter.WriteHeader(g.ResponseWriter.Status())
+	}
 	return g.writer.Write(data)
 }
 
