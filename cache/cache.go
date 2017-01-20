@@ -62,13 +62,17 @@ type Cache struct {
     Store
 }
 
-func (cache *Cache) CacheMiddleware(expire time.Duration) mel.Handler {
-    return func(c *mel.Context) {
-
-    }
+func (cache *Cache) Middleware(expire time.Duration) mel.Handler {
+    return cache.cache(expire, func(c *mel.Context) {
+        c.Next()
+    })
 }
 
 func (cache *Cache) Cache(expire time.Duration, handler mel.Handler) mel.Handler {
+    return cache.cache(expire, handler)
+}
+
+func (cache *Cache) cache(expire time.Duration, target mel.Handler) mel.Handler {
     return func(c *mel.Context) {
         key := cache.makeKey(c.Request.URL.RequestURI())
         var r responseCache
@@ -81,7 +85,7 @@ func (cache *Cache) Cache(expire time.Duration, handler mel.Handler) mel.Handler
                 Cache: cache,
             }
             c.Writer = cw
-            handler(c)
+            target(c)
             cw.cache()
         } else {
             c.Status(r.status)
