@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"github.com/gorilla/securecookie"
 	"time"
-	"sync"
 )
 
 // NewCookieStore returns a new CookieStore.
@@ -121,4 +120,3 @@ func NewCookie(name, value string, options *Options) *http.Cookie {
 	}
 	return cookie
 }
-

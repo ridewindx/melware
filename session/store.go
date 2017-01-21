@@ -17,7 +17,4 @@ type Store interface {
 
 	// Save should persist session to the underlying store implementation.
 	Save(r *http.Request, w http.ResponseWriter, s *RawSession) error
-
-	Options(Options)
 }
-

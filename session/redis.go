@@ -52,7 +52,7 @@ func (s *RedisStore) SetSerializer(ss SessionSerializer) {
 func (s *RedisStore) SetMaxAge(v int) {
 	var c *securecookie.SecureCookie
 	var ok bool
-	s.options.MaxAge = v
+	s.Options.MaxAge = v
 	for i := range s.Codecs {
 		if c, ok = s.Codecs[i].(*securecookie.SecureCookie); ok {
 			c.MaxAge(v)
@@ -126,7 +126,7 @@ func NewRedisStoreWithPool(pool *redis.Pool, keyPairs ...[]byte) (*RedisStore, e
 		// http://godoc.org/github.com/garyburd/redigo/redis#Pool
 		Pool:   pool,
 		Codecs: securecookie.CodecsFromPairs(keyPairs...),
-		options: &Options{
+		Options: &Options{
 			Path:   "/",
 			MaxAge: sessionExpire,
 		},
@@ -143,7 +143,7 @@ func NewRedisStoreWithPool(pool *redis.Pool, keyPairs ...[]byte) (*RedisStore, e
 type RedisStore struct {
 	Pool          *redis.Pool
 	Codecs        []securecookie.Codec
-	options       *Options // default configuration
+	Options       *Options // default configuration
 	DefaultMaxAge int      // default Redis TTL for a MaxAge == 0 session
 	maxLength     int
 	keyPrefix     string
@@ -169,7 +169,7 @@ func (s *RedisStore) New(r *http.Request, name string) (*RawSession, error) {
 	var err error
 	session := NewSession(s, name)
 	// make a copy
-	options := *s.Options
+	options := *s.OOOptions
 	session.Options = &options
 	session.IsNew = true
 	if c, errCookie := r.Cookie(name); errCookie == nil {
@@ -291,16 +291,6 @@ func (s *RedisStore) delete(session *RawSession) error {
 		return err
 	}
 	return nil
-}
-
-func (c *RedisStore) Options(options Options) {
-	c.options = &Options{
-		Path:     options.Path,
-		Domain:   options.Domain,
-		MaxAge:   options.MaxAge,
-		Secure:   options.Secure,
-		HttpOnly: options.HttpOnly,
-	}
 }
 
 // SessionSerializer provides an interface hook for alternative serializers

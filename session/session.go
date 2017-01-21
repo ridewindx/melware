@@ -124,7 +124,6 @@ type Session interface {
 
 const (
 	DefaultKey  = "github.com/gin-contrib/sessions"
-	errorFormat = "[sessions] ERROR! %s\n"
 )
 
 func Sessions(name string, store Store) mel.Handler {
@@ -164,9 +163,8 @@ func (s *session) Delete(key interface{}) {
 }
 
 func (s *session) Clear() {
-	for key := range s.Session().Values {
-		s.Delete(key)
-	}
+	s.Session().Values = make(map[interface{}]interface{})
+	s.written = true
 }
 
 func (s *session) AddFlash(value interface{}, vars ...string) {
@@ -190,14 +188,14 @@ func (s *session) Options(options Options) {
 }
 
 func (s *session) Save() error {
-	if s.Written() {
-		e := s.Session().Save(s.request, s.writer)
-		if e == nil {
-			s.written = false
-		}
-		return e
+	if !s.Written() {
+		return nil
 	}
-	return nil
+	err := s.Session().Save(s.request, s.writer)
+	if err == nil {
+		s.written = false
+	}
+	return err
 }
 
 func (s *session) Session() *RawSession {
@@ -205,7 +203,7 @@ func (s *session) Session() *RawSession {
 		var err error
 		s.session, err = s.store.Get(s.request, s.name)
 		if err != nil {
-			log.Printf(errorFormat, err)
+			log.Printf("[sessions] ERROR! %s\n", err) // TODO
 		}
 	}
 	return s.session
@@ -251,4 +249,3 @@ func getSession(store Store, r *http.Request, name string) (*RawSession, error) 
 	reg[name] = sessionInfo{s: session, e: err}
 	return session, err
 }
-
