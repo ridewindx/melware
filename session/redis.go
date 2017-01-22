@@ -169,7 +169,7 @@ func (s *RedisStore) New(r *http.Request, name string) (*RawSession, error) {
 	var err error
 	session := NewSession(s, name)
 	// make a copy
-	options := *s.OOOptions
+	options := *s.Options
 	session.Options = &options
 	session.IsNew = true
 	if c, errCookie := r.Cookie(name); errCookie == nil {
