@@ -207,27 +207,6 @@ func (s *RedisStore) Save(r *http.Request, w http.ResponseWriter, session *RawSe
 	return nil
 }
 
-// Delete removes the session from redis, and sets the cookie to expire.
-//
-// WARNING: This method should be considered deprecated since it is not exposed via the gorilla/sessions interface.
-// Set session.Options.MaxAge = -1 and call Save instead. - July 18th, 2013
-func (s *RedisStore) Delete(r *http.Request, w http.ResponseWriter, session *RawSession) error {
-	conn := s.Pool.Get()
-	defer conn.Close()
-	if _, err := conn.Do("DEL", s.keyPrefix+session.ID); err != nil {
-		return err
-	}
-	// Set cookie to expire.
-	options := *session.Options
-	options.MaxAge = -1
-	http.SetCookie(w, NewCookie(session.Name(), "", &options))
-	// Clear session values.
-	for k := range session.Values {
-		delete(session.Values, k)
-	}
-	return nil
-}
-
 // ping does an internal ping against a server to check if it is alive.
 func (s *RedisStore) ping() (bool, error) {
 	conn := s.Pool.Get()
