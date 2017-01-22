@@ -47,40 +47,22 @@ type CookieStore struct {
 //
 // It returns a new session and an error if the session exists but could
 // not be decoded.
-func (s *CookieStore) Get(r *http.Request, name string) (*RawSession, error) {
-	return getSession(s, r, name)
-}
-
-// New returns a session for the given name without adding it to the registry.
-//
-// The difference between New() and Get() is that calling New() twice will
-// decode the session data twice, while Get() registers and reuses the same
-// decoded session after the first call.
-func (s *CookieStore) New(r *http.Request, name string) (*RawSession, error) {
-	session := NewSession(s, name)
-	opts := *s.Options
-	session.Options = &opts
-	session.IsNew = true
-	var err error
-	if c, errCookie := r.Cookie(name); errCookie == nil {
-		err = securecookie.DecodeMulti(name, c.Value, &session.Values,
-			s.Codecs...)
-		if err == nil {
-			session.IsNew = false
-		}
-	}
-	return session, err
-}
-
-// Save adds a single session to the response.
-func (s *CookieStore) Save(r *http.Request, w http.ResponseWriter,
-session *RawSession) error {
-	encoded, err := securecookie.EncodeMulti(session.Name(), session.Values,
-		s.Codecs...)
+func (s *CookieStore) Get(r *http.Request, name string, session *Session) error {
+	cookie, err := r.Cookie(name)
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, NewCookie(session.Name(), encoded, session.Options))
+	err = securecookie.DecodeMulti(name, cookie.Value, &session.Values, s.Codecs...)
+	return err
+}
+
+// Save adds a single session to the response.
+func (s *CookieStore) Save(r *http.Request, w http.ResponseWriter, session *Session) error {
+	encoded, err := securecookie.EncodeMulti(session.Name, session.Values, s.Codecs...)
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, NewCookie(session.Name, encoded, session.Options))
 	return nil
 }
 

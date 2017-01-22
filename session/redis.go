@@ -139,72 +139,9 @@ func NewRedisStoreWithPool(pool *redis.Pool, keyPairs ...[]byte) (*RedisStore, e
 	return rs, err
 }
 
-// RedisStore stores sessions in a redis backend.
-type RedisStore struct {
-	Pool          *redis.Pool
-	Codecs        []securecookie.Codec
-	Options       *Options // default configuration
-	DefaultMaxAge int      // default Redis TTL for a MaxAge == 0 session
-	maxLength     int
-	keyPrefix     string
-	serializer    SessionSerializer
-}
-
 // Close closes the underlying *redis.Pool
 func (s *RedisStore) Close() error {
 	return s.Pool.Close()
-}
-
-// Get returns a session for the given name after adding it to the registry.
-//
-// See gorilla/sessions FilesystemStore.Get().
-func (s *RedisStore) Get(r *http.Request, name string) (*RawSession, error) {
-	return getSession(s, r, name)
-}
-
-// New returns a session for the given name without adding it to the registry.
-//
-// See gorilla/sessions FilesystemStore.New().
-func (s *RedisStore) New(r *http.Request, name string) (*RawSession, error) {
-	var err error
-	session := NewSession(s, name)
-	// make a copy
-	options := *s.Options
-	session.Options = &options
-	session.IsNew = true
-	if c, errCookie := r.Cookie(name); errCookie == nil {
-		err = securecookie.DecodeMulti(name, c.Value, &session.ID, s.Codecs...)
-		if err == nil {
-			ok, err := s.load(session)
-			session.IsNew = !(err == nil && ok) // not new if no error and data available
-		}
-	}
-	return session, err
-}
-
-// Save adds a single session to the response.
-func (s *RedisStore) Save(r *http.Request, w http.ResponseWriter, session *RawSession) error {
-	// Marked for deletion.
-	if session.Options.MaxAge < 0 {
-		if err := s.delete(session); err != nil {
-			return err
-		}
-		http.SetCookie(w, NewCookie(session.Name(), "", session.Options))
-	} else {
-		// Build an alphanumeric key for the redis store.
-		if session.ID == "" {
-			session.ID = strings.TrimRight(base32.StdEncoding.EncodeToString(securecookie.GenerateRandomKey(32)), "=")
-		}
-		if err := s.save(session); err != nil {
-			return err
-		}
-		encoded, err := securecookie.EncodeMulti(session.Name(), session.ID, s.Codecs...)
-		if err != nil {
-			return err
-		}
-		http.SetCookie(w, NewCookie(session.Name(), encoded, session.Options))
-	}
-	return nil
 }
 
 // ping does an internal ping against a server to check if it is alive.
@@ -218,73 +155,19 @@ func (s *RedisStore) ping() (bool, error) {
 	return (data == "PONG"), nil
 }
 
-// save stores the session in redis.
-func (s *RedisStore) save(session *RawSession) error {
-	b, err := s.serializer.Serialize(session)
-	if err != nil {
-		return err
-	}
-	if s.maxLength != 0 && len(b) > s.maxLength {
-		return errors.New("SessionStore: the value to store is too big")
-	}
-	conn := s.Pool.Get()
-	defer conn.Close()
-	if err = conn.Err(); err != nil {
-		return err
-	}
-	age := session.Options.MaxAge
-	if age == 0 {
-		age = s.DefaultMaxAge
-	}
-	_, err = conn.Do("SETEX", s.keyPrefix+session.ID, age, b)
-	return err
-}
-
-// load reads the session from redis.
-// returns true if there is a sessoin data in DB
-func (s *RedisStore) load(session *RawSession) (bool, error) {
-	conn := s.Pool.Get()
-	defer conn.Close()
-	if err := conn.Err(); err != nil {
-		return false, err
-	}
-	data, err := conn.Do("GET", s.keyPrefix+session.ID)
-	if err != nil {
-		return false, err
-	}
-	if data == nil {
-		return false, nil // no data was associated with this key
-	}
-	b, err := redis.Bytes(data, err)
-	if err != nil {
-		return false, err
-	}
-	return true, s.serializer.Deserialize(b, session)
-}
-
-// delete removes keys from redis if MaxAge<0
-func (s *RedisStore) delete(session *RawSession) error {
-	conn := s.Pool.Get()
-	defer conn.Close()
-	if _, err := conn.Do("DEL", s.keyPrefix+session.ID); err != nil {
-		return err
-	}
-	return nil
-}
-
 // SessionSerializer provides an interface hook for alternative serializers
 type SessionSerializer interface {
-	Deserialize(d []byte, ss *RawSession) error
-	Serialize(ss *RawSession) ([]byte, error)
+	Deserialize(d []byte, sv SessionValues) error
+	Serialize(sv *SessionValues) ([]byte, error)
 }
 
 // JSONSerializer encode the session map to JSON.
 type JSONSerializer struct{}
 
 // Serialize to JSON. Will err if there are unmarshalable key values
-func (s JSONSerializer) Serialize(ss *RawSession) ([]byte, error) {
-	m := make(map[string]interface{}, len(ss.Values))
-	for k, v := range ss.Values {
+func (s JSONSerializer) Serialize(sv SessionValues) ([]byte, error) {
+	m := make(map[string]interface{}, len(sv))
+	for k, v := range sv {
 		ks, ok := k.(string)
 		if !ok {
 			err := fmt.Errorf("Non-string key value, cannot serialize session to JSON: %v", k)
@@ -297,7 +180,7 @@ func (s JSONSerializer) Serialize(ss *RawSession) ([]byte, error) {
 }
 
 // Deserialize back to map[string]interface{}
-func (s JSONSerializer) Deserialize(d []byte, ss *RawSession) error {
+func (s JSONSerializer) Deserialize(d []byte, sv *SessionValues) error {
 	m := make(map[string]interface{})
 	err := json.Unmarshal(d, &m)
 	if err != nil {
@@ -305,7 +188,7 @@ func (s JSONSerializer) Deserialize(d []byte, ss *RawSession) error {
 		return err
 	}
 	for k, v := range m {
-		ss.Values[k] = v
+		sv[k] = v
 	}
 	return nil
 }
@@ -314,10 +197,10 @@ func (s JSONSerializer) Deserialize(d []byte, ss *RawSession) error {
 type GobSerializer struct{}
 
 // Serialize using gob
-func (s GobSerializer) Serialize(ss *RawSession) ([]byte, error) {
+func (s GobSerializer) Serialize(sv SessionValues) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	enc := gob.NewEncoder(buf)
-	err := enc.Encode(ss.Values)
+	err := enc.Encode(sv)
 	if err == nil {
 		return buf.Bytes(), nil
 	}
@@ -325,7 +208,88 @@ func (s GobSerializer) Serialize(ss *RawSession) ([]byte, error) {
 }
 
 // Deserialize back to map[interface{}]interface{}
-func (s GobSerializer) Deserialize(d []byte, ss *RawSession) error {
+func (s GobSerializer) Deserialize(d []byte, sv *SessionValues) error {
 	dec := gob.NewDecoder(bytes.NewBuffer(d))
-	return dec.Decode(&ss.Values)
+	return dec.Decode(sv)
+}
+
+type RedisStore struct {
+	Pool          *redis.Pool
+	Codecs        []securecookie.Codec
+	Options       *Options // default configuration
+	DefaultMaxAge int      // default Redis TTL for a MaxAge == 0 session
+	maxLength     int
+	keyPrefix     string
+	serializer    SessionSerializer
+}
+
+func (s *RedisStore) Get(r *http.Request, name string, session *Session) error {
+	cookie, err := r.Cookie(name)
+	if err != nil {
+		return err
+	}
+
+	err = securecookie.DecodeMulti(name, cookie.Value, &session.ID, s.Codecs...)
+	if err != nil {
+		return err
+	}
+
+	conn := s.Pool.Get()
+	defer conn.Close()
+
+	data, err := conn.Do("GET", s.keyPrefix+session.ID)
+	if data == nil { // no data was associated with the key
+		return nil
+	}
+	b, err := redis.Bytes(data, err)
+	if err != nil {
+		return err
+	}
+	err = s.serializer.Deserialize(b, &session.Values)
+	return err
+}
+
+func (s *RedisStore) Save(r *http.Request, w http.ResponseWriter, session *Session) error {
+	// Marked for deletion.
+	if session.Options.MaxAge < 0 {
+		conn := s.Pool.Get()
+		defer conn.Close()
+		if _, err := conn.Do("DEL", s.keyPrefix+session.ID); err != nil {
+			return err
+		}
+		http.SetCookie(w, NewCookie(session.Name(), "", session.Options))
+	} else {
+		if session.ID == "" {
+			id := securecookie.GenerateRandomKey(32)
+			id = base32.StdEncoding.EncodeToString(id)
+			session.ID = strings.TrimRight(id, "=")
+		}
+
+		b, err := s.serializer.Serialize(session.Values)
+		if err != nil {
+			return err
+		}
+		if s.maxLength != 0 && len(b) > s.maxLength {
+			return errors.New("SessionStore: the value to store is too big")
+		}
+		conn := s.Pool.Get()
+		defer conn.Close()
+
+		age := session.Options.MaxAge
+		if age == 0 {
+			age = s.DefaultMaxAge
+		}
+
+		_, err = conn.Do("SETEX", s.keyPrefix+session.ID, age, b)
+		if err != nil {
+			return err
+		}
+
+		encoded, err := securecookie.EncodeMulti(session.Name(), session.ID, s.Codecs...)
+		if err != nil {
+			return err
+		}
+		http.SetCookie(w, NewCookie(session.Name(), encoded, session.Options))
+	}
+	return nil
 }
