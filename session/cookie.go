@@ -3,8 +3,14 @@ package session
 import (
 	"net/http"
 	"github.com/gorilla/securecookie"
-	"time"
+	"fmt"
 )
+
+// CookieStore stores sessions using secure cookies.
+type CookieStore struct {
+	Codecs  []securecookie.Codec
+	*Options // default configuration
+}
 
 // NewCookieStore returns a new CookieStore.
 //
@@ -26,7 +32,7 @@ func NewCookieStore(keyPairs ...[]byte) *CookieStore {
 		Codecs: securecookie.CodecsFromPairs(keyPairs...),
 		Options: &Options{
 			Path:   "/",
-			MaxAge: 86400 * 30,
+			MaxAge: sessionExpire,
 		},
 	}
 
@@ -34,71 +40,50 @@ func NewCookieStore(keyPairs ...[]byte) *CookieStore {
 	return cs
 }
 
-// CookieStore stores sessions using secure cookies.
-type CookieStore struct {
-	Codecs  []securecookie.Codec
-	Options *Options // default configuration
-}
-
-// Get returns a session for the given name after adding it to the registry.
+// Get returns a session for the given name.
 //
 // It returns a new session if the sessions doesn't exist. Access IsNew on
 // the session to check if it is an existing session or a new one.
 //
 // It returns a new session and an error if the session exists but could
 // not be decoded.
-func (s *CookieStore) Get(r *http.Request, name string, session *Session) error {
+func (store *CookieStore) Get(r *http.Request, name string, s *session) error {
+	// Copy options.
+	options := *store.Options
+	s.Options = &options
+
 	cookie, err := r.Cookie(name)
 	if err != nil {
 		return err
 	}
-	err = securecookie.DecodeMulti(name, cookie.Value, &session.Values, s.Codecs...)
+	// Decode to get contents.
+	err = securecookie.DecodeMulti(name, cookie.Value, &s.Contents, store.Codecs...)
 	return err
 }
 
 // Save adds a single session to the response.
-func (s *CookieStore) Save(r *http.Request, w http.ResponseWriter, session *Session) error {
-	encoded, err := securecookie.EncodeMulti(session.Name, session.Values, s.Codecs...)
+func (store *CookieStore) Save(r *http.Request, w http.ResponseWriter, s *session) error {
+	// Encode to put contents.
+	value, err := securecookie.EncodeMulti(s.Name, s.Contents, store.Codecs...)
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, NewCookie(session.Name, encoded, session.Options))
+	http.SetCookie(w, newCookie(s.Name, value, s.Options))
 	return nil
 }
 
-// MaxAge sets the maximum age for the store and the underlying cookie
-// implementation. Individual sessions can be deleted by setting Options.MaxAge
+// MaxAge sets the maximum age for cookie.
+// Individual sessions can be deleted by setting Options.MaxAge
 // = -1 for that session.
-func (s *CookieStore) MaxAge(age int) {
-	s.Options.MaxAge = age
+func (store *CookieStore) MaxAge(age int) {
+	store.Options.MaxAge = age
 
 	// Set the maxAge for each securecookie instance.
-	for _, codec := range s.Codecs {
-		if sc, ok := codec.(*securecookie.SecureCookie); ok {
-			sc.MaxAge(age)
+	for _, codec := range store.Codecs {
+		if c, ok := codec.(*securecookie.SecureCookie); ok {
+			c.MaxAge(age)
+		} else {
+			fmt.Printf("Can't change MaxAge on codec %v\n", codec)
 		}
 	}
-}
-
-// NewCookie returns an http.Cookie with the options set. It also sets
-// the Expires field calculated based on the MaxAge value, for Internet
-// Explorer compatibility.
-func NewCookie(name, value string, options *Options) *http.Cookie {
-	cookie := &http.Cookie{
-		Name:     name,
-		Value:    value,
-		Path:     options.Path,
-		Domain:   options.Domain,
-		MaxAge:   options.MaxAge,
-		Secure:   options.Secure,
-		HttpOnly: options.HttpOnly,
-	}
-	if options.MaxAge > 0 {
-		d := time.Duration(options.MaxAge) * time.Second
-		cookie.Expires = time.Now().Add(d)
-	} else if options.MaxAge < 0 {
-		// Set it to the past to expire now.
-		cookie.Expires = time.Unix(1, 0)
-	}
-	return cookie
 }

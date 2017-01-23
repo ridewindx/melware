@@ -4,7 +4,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"net/http"
-	"fmt"
+	"log"
 	"bytes"
 	"encoding/json"
 	"encoding/gob"
@@ -12,10 +12,21 @@ import (
 	"time"
 	"github.com/gorilla/securecookie"
 	"github.com/garyburd/redigo/redis"
+	"fmt"
 )
 
-// Amount of time for cookies/redis keys to expire.
-var sessionExpire = 86400 * 30
+type RedisStore struct {
+	Pool          *redis.Pool
+
+	Codecs        []securecookie.Codec
+	*Options // default configuration
+
+	DefaultMaxAge int      // default Redis TTL for a MaxAge == 0 session
+
+	maxLength     int
+	keyPrefix     string
+	serializer    SessionSerializer
+}
 
 // SetMaxLength sets RedisStore.maxLength if the `l` argument is greater or equal 0
 // maxLength restricts the maximum length of new sessions to l.
@@ -23,20 +34,20 @@ var sessionExpire = 86400 * 30
 // The default for a new RedisStore is 4096. Redis allows for max.
 // value sizes of up to 512MB (http://redis.io/topics/data-types)
 // Default: 4096,
-func (s *RedisStore) SetMaxLength(l int) {
+func (store *RedisStore) SetMaxLength(l int) {
 	if l >= 0 {
-		s.maxLength = l
+		store.maxLength = l
 	}
 }
 
 // SetKeyPrefix set the prefix
-func (s *RedisStore) SetKeyPrefix(p string) {
-	s.keyPrefix = p
+func (store *RedisStore) SetKeyPrefix(p string) {
+	store.keyPrefix = p
 }
 
 // SetSerializer sets the serializer
-func (s *RedisStore) SetSerializer(ss SessionSerializer) {
-	s.serializer = ss
+func (store *RedisStore) SetSerializer(ss SessionSerializer) {
+	store.serializer = ss
 }
 
 // SetMaxAge restricts the maximum age, in seconds, of the session record
@@ -49,15 +60,14 @@ func (s *RedisStore) SetSerializer(ss SessionSerializer) {
 // Set it to 0 for no restriction.
 // Because we use `MaxAge` also in SecureCookie crypting algorithm you should
 // use this function to change `MaxAge` value.
-func (s *RedisStore) SetMaxAge(v int) {
-	var c *securecookie.SecureCookie
-	var ok bool
-	s.Options.MaxAge = v
-	for i := range s.Codecs {
-		if c, ok = s.Codecs[i].(*securecookie.SecureCookie); ok {
-			c.MaxAge(v)
+func (store *RedisStore) SetMaxAge(age int) {
+	store.Options.MaxAge = age
+
+	for _, codec := range store.Codecs {
+		if c, ok := codec.(*securecookie.SecureCookie); ok {
+			c.MaxAge(age)
 		} else {
-			fmt.Printf("Can't change MaxAge on codec %v\n", s.Codecs[i])
+			log.Printf("Can't change MaxAge on codec %v\n", codec)
 		}
 	}
 }
@@ -155,23 +165,105 @@ func (s *RedisStore) ping() (bool, error) {
 	return (data == "PONG"), nil
 }
 
+func (store *RedisStore) Get(r *http.Request, name string, s *session) error {
+	// Copy options.
+	options := *store.Options
+	s.Options = &options
+
+	cookie, err := r.Cookie(name)
+	if err != nil {
+		return err
+	}
+
+	// Decode to get ID.
+	err = securecookie.DecodeMulti(name, cookie.Value, &s.ID, store.Codecs...)
+	if err != nil {
+		return err
+	}
+
+	conn := store.Pool.Get()
+	defer conn.Close()
+
+	data, err := conn.Do("GET", store.keyPrefix+s.ID)
+	if data == nil { // no data was associated with the key
+		return nil
+	}
+	b, err := redis.Bytes(data, err)
+	if err != nil {
+		return err
+	}
+	// Deserialize to get contents.
+	err = store.serializer.Deserialize(b, &s.Contents)
+	return err
+}
+
+func (store *RedisStore) Save(r *http.Request, w http.ResponseWriter, s *session) error {
+	if s.Options.MaxAge < 0 {
+		conn := store.Pool.Get()
+		defer conn.Close()
+		// Delete ID from Redis.
+		if _, err := conn.Do("DEL", store.keyPrefix+ s.ID); err != nil {
+			return err
+		}
+		http.SetCookie(w, newCookie(s.Name, "", s.Options))
+	} else {
+		if s.ID == "" {
+			// Generate ID.
+			id := securecookie.GenerateRandomKey(32)
+			id = base32.StdEncoding.EncodeToString(id)
+			s.ID = strings.TrimRight(id, "=")
+		}
+
+		// Serialize to put contents.
+		b, err := store.serializer.Serialize(s.Contents)
+		if err != nil {
+			return err
+		}
+		if store.maxLength != 0 && len(b) > store.maxLength {
+			return errors.New("The value to store is too big")
+		}
+
+		conn := store.Pool.Get()
+		defer conn.Close()
+
+		age := s.Options.MaxAge
+		if age == 0 {
+			age = store.DefaultMaxAge
+		}
+
+		// Store ID and contents to Redis.
+		_, err = conn.Do("SETEX", store.keyPrefix+s.ID, age, b)
+		if err != nil {
+			return err
+		}
+
+		// Encode to put ID.
+		value, err := securecookie.EncodeMulti(s.Name, s.ID, store.Codecs...)
+		if err != nil {
+			return err
+		}
+		http.SetCookie(w, newCookie(s.Name, value, s.Options))
+	}
+	return nil
+}
+
 // SessionSerializer provides an interface hook for alternative serializers
 type SessionSerializer interface {
-	Deserialize(d []byte, sv SessionValues) error
-	Serialize(sv *SessionValues) ([]byte, error)
+	Deserialize(d []byte, sv Contents) error
+	Serialize(sv *Contents) ([]byte, error)
 }
 
 // JSONSerializer encode the session map to JSON.
 type JSONSerializer struct{}
 
 // Serialize to JSON. Will err if there are unmarshalable key values
-func (s JSONSerializer) Serialize(sv SessionValues) ([]byte, error) {
+func (s JSONSerializer) Serialize(sv Contents) ([]byte, error) {
 	m := make(map[string]interface{}, len(sv))
 	for k, v := range sv {
 		ks, ok := k.(string)
 		if !ok {
 			err := fmt.Errorf("Non-string key value, cannot serialize session to JSON: %v", k)
-			fmt.Printf("redistore.JSONSerializer.serialize() Error: %v", err)
+			log.Printf("JSONSerializer.serialize() Error: %v", err)
 			return nil, err
 		}
 		m[ks] = v
@@ -180,11 +272,11 @@ func (s JSONSerializer) Serialize(sv SessionValues) ([]byte, error) {
 }
 
 // Deserialize back to map[string]interface{}
-func (s JSONSerializer) Deserialize(d []byte, sv *SessionValues) error {
+func (s JSONSerializer) Deserialize(d []byte, sv *Contents) error {
 	m := make(map[string]interface{})
 	err := json.Unmarshal(d, &m)
 	if err != nil {
-		fmt.Printf("redistore.JSONSerializer.deserialize() Error: %v", err)
+		log.Printf("JSONSerializer.deserialize() Error: %v", err)
 		return err
 	}
 	for k, v := range m {
@@ -197,7 +289,7 @@ func (s JSONSerializer) Deserialize(d []byte, sv *SessionValues) error {
 type GobSerializer struct{}
 
 // Serialize using gob
-func (s GobSerializer) Serialize(sv SessionValues) ([]byte, error) {
+func (s GobSerializer) Serialize(sv Contents) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	enc := gob.NewEncoder(buf)
 	err := enc.Encode(sv)
@@ -208,88 +300,7 @@ func (s GobSerializer) Serialize(sv SessionValues) ([]byte, error) {
 }
 
 // Deserialize back to map[interface{}]interface{}
-func (s GobSerializer) Deserialize(d []byte, sv *SessionValues) error {
+func (s GobSerializer) Deserialize(d []byte, sv *Contents) error {
 	dec := gob.NewDecoder(bytes.NewBuffer(d))
 	return dec.Decode(sv)
-}
-
-type RedisStore struct {
-	Pool          *redis.Pool
-	Codecs        []securecookie.Codec
-	Options       *Options // default configuration
-	DefaultMaxAge int      // default Redis TTL for a MaxAge == 0 session
-	maxLength     int
-	keyPrefix     string
-	serializer    SessionSerializer
-}
-
-func (s *RedisStore) Get(r *http.Request, name string, session *Session) error {
-	cookie, err := r.Cookie(name)
-	if err != nil {
-		return err
-	}
-
-	err = securecookie.DecodeMulti(name, cookie.Value, &session.ID, s.Codecs...)
-	if err != nil {
-		return err
-	}
-
-	conn := s.Pool.Get()
-	defer conn.Close()
-
-	data, err := conn.Do("GET", s.keyPrefix+session.ID)
-	if data == nil { // no data was associated with the key
-		return nil
-	}
-	b, err := redis.Bytes(data, err)
-	if err != nil {
-		return err
-	}
-	err = s.serializer.Deserialize(b, &session.Values)
-	return err
-}
-
-func (s *RedisStore) Save(r *http.Request, w http.ResponseWriter, session *Session) error {
-	// Marked for deletion.
-	if session.Options.MaxAge < 0 {
-		conn := s.Pool.Get()
-		defer conn.Close()
-		if _, err := conn.Do("DEL", s.keyPrefix+session.ID); err != nil {
-			return err
-		}
-		http.SetCookie(w, NewCookie(session.Name(), "", session.Options))
-	} else {
-		if session.ID == "" {
-			id := securecookie.GenerateRandomKey(32)
-			id = base32.StdEncoding.EncodeToString(id)
-			session.ID = strings.TrimRight(id, "=")
-		}
-
-		b, err := s.serializer.Serialize(session.Values)
-		if err != nil {
-			return err
-		}
-		if s.maxLength != 0 && len(b) > s.maxLength {
-			return errors.New("SessionStore: the value to store is too big")
-		}
-		conn := s.Pool.Get()
-		defer conn.Close()
-
-		age := session.Options.MaxAge
-		if age == 0 {
-			age = s.DefaultMaxAge
-		}
-
-		_, err = conn.Do("SETEX", s.keyPrefix+session.ID, age, b)
-		if err != nil {
-			return err
-		}
-
-		encoded, err := securecookie.EncodeMulti(session.Name(), session.ID, s.Codecs...)
-		if err != nil {
-			return err
-		}
-		http.SetCookie(w, NewCookie(session.Name(), encoded, session.Options))
-	}
-	return nil
 }

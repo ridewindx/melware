@@ -1,10 +1,15 @@
 package session
 
 import (
+	"log"
 	"github.com/ridewindx/mel"
 )
 
-// Default flashes key.
+// Key for session storing into context.
+// You can change it, i.e., session.ContextKey = "XXX".
+var ContextKey  = "SESSION"
+
+// Default key for flashes storing into session.
 const flashesKey = "_flash"
 
 // Options stores configuration for a session or session store.
@@ -20,60 +25,71 @@ type Options struct {
 	HttpOnly bool
 }
 
-const (
-	DefaultKey  = "github.com/gin-contrib/sessions"
-)
-
-func Sessions(name string, store Store) mel.Handler {
+// Middleware returns a middleware that handles session.
+func Middleware(name string, store Store) mel.Handler {
 	return func(c *mel.Context) {
-		s := &Session{
+		s := &session{
 			Name: name,
-			Values: make(SessionValues),
+			Contents: make(Contents),
 			store: store,
-			Context: c,
+			context: c,
 		}
-		c.Set(DefaultKey, s)
+		err := s.store.Get(c.Request, s.Name, s)
+		if err != nil {
+			log.Printf("session: %s\n", err)
+		}
+		c.Set(ContextKey, s)
 		c.Next()
 	}
 }
 
-// shortcut to get session
-func Default(c *mel.Context) Session {
-	return c.MustGet(DefaultKey).(Session)
+// Session gets session for current request.
+func Session(c *mel.Context) *session {
+	return c.MustGet(ContextKey).(*session)
 }
 
-type SessionValues map[interface{}]interface{}
+type Contents map[interface{}]interface{}
 
-type Session struct {
-	Name string
-	ID string
-	Values map[interface{}]interface{}
-	changed bool
-	store Store
-	*mel.Context
+type session struct {
+	// Session name.
+	Name     string
+
+	// Session ID.
+	ID       string
+
+	// Key-value pairs for holding your session contents.
+	Contents
+
+	// Whether changed after taken out.
+	changed  bool
+
+	store    Store
+
+	context *mel.Context
+
 	*Options
 }
 
-func (s *Session) Get(key interface{}) (interface{}, bool) {
-	return s.Values[key]
+func (s *session) Get(key interface{}) (interface{}, bool) {
+	return s.Contents[key]
 }
 
-func (s *Session) Set(key interface{}, value interface{}) {
-	s.Values[key] = value
+func (s *session) Set(key interface{}, value interface{}) {
+	s.Contents[key] = value
 	s.changed = true
 }
 
-func (s *Session) Delete(key interface{}) {
-	delete(s.Values, key)
+func (s *session) Delete(key interface{}) {
+	delete(s.Contents, key)
 	s.changed = true
 }
 
-func (s *Session) Clear() {
-	s.Values = make(map[interface{}]interface{})
+func (s *session) Clear() {
+	s.Contents = make(Contents)
 	s.changed = true
 }
 
-func (s *Session) AddFlash(args ...string) {
+func (s *session) AddFlash(args ...string) {
 	key := flashesKey
 	value := args[0]
 	if len(args) > 1 {
@@ -81,30 +97,30 @@ func (s *Session) AddFlash(args ...string) {
 		value = args[1]
 	}
 	var flashes []interface{}
-	if v, ok := s.Values[key]; ok {
+	if v, ok := s.Contents[key]; ok {
 		flashes = v.([]interface{})
 	}
-	s.Values[key] = append(flashes, value)
+	s.Contents[key] = append(flashes, value)
 }
 
-func (s *Session) Flashes(args ...string) []interface{} {
+func (s *session) Flashes(args ...string) []interface{} {
 	key := flashesKey
 	if len(args) > 0 {
 		key = args[0]
 	}
-	if v, ok := s.Values[key]; ok {
-		delete(s.Values, key)
+	if v, ok := s.Contents[key]; ok {
+		delete(s.Contents, key)
 		return v.([]interface{})
 	}
 	return nil
 }
 
-func (s *Session) Save() error {
+func (s *session) Save() error {
 	if !s.changed {
 		return nil
 	}
 
-	err := s.store.Save(s.Request, s.Writer, s)
+	err := s.store.Save(s.context.Request, s.context.Writer, s)
 	if err == nil {
 		s.changed = false
 	}
