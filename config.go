@@ -17,7 +17,7 @@ type config struct {
 // and put it into Mel.
 // The config object inherently has all the methods of viper.Viper.
 func Config(mel *mel.Mel) *config {
-	v, ok := mel.Get(ConfigKey)
+	v, ok := mel.GetVar(ConfigKey)
 	if ok {
 		return v.(*config)
 	}
@@ -28,7 +28,7 @@ func Config(mel *mel.Mel) *config {
 
 	c.ReadInConfig()
 
-	mel.Set(ConfigKey, c)
+	mel.SetVar(ConfigKey, c)
 	return c
 }
 
