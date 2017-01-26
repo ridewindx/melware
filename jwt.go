@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 	"errors"
-	"github.com/gin-gonic/gin"
 )
 
 // JWT provides a Json-Web-Token authentication implementation.
@@ -58,7 +57,7 @@ type JWT struct {
 	PayloadFunc  func(userID string) map[string]interface{}
 
 	// Unauthorized specifies the unauthorized function.
-	Unauthorized func(*gin.Context, int, string)
+	Unauthorized func(*mel.Context, int, string)
 
 	// TokenBearer is a string in the form of "<source>:<name>"
 	// that is used to extract token from the request.
@@ -166,7 +165,7 @@ func (j *JWT) init() {
 func (j *JWT) Middleware() mel.Handler {
 	j.init()
 
-	return func(c *gin.Context) {
+	return func(c *mel.Context) {
 		token, err := j.parseToken(c)
 
 		if err != nil {
@@ -252,7 +251,7 @@ func (j *JWT) LoginHandler() mel.Handler {
 // The token still needs to be valid on refresh.
 // Shall be put under an endpoint that is using the Middleware.
 // Reply will be of the form {"token": "TOKEN"}.
-func (j *JWT) RefreshHandler(c *gin.Context) {
+func (j *JWT) RefreshHandler(c *mel.Context) {
 	token, _ := j.parseToken(c)
 	claims := token.Claims.(jwt.MapClaims)
 
