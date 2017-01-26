@@ -8,7 +8,7 @@ import (
 	"github.com/ridewindx/mel"
 )
 
-type cors struct {
+type Cors struct {
 	// AllowedOrigins is a slice of origins that a cors request can be executed from.
 	// An origin may contain a wildcard (*) to replace 0 or more characters
 	// (e.g., http://*.domain.com). Only one wildcard can be used per origin.
@@ -47,17 +47,52 @@ type cors struct {
 	preflightHeaders http.Header
 }
 
-func Cors() *cors {
-	return &cors{
-		AllowOrigins: {"*"},
-		AllowMethods: {"GET", "POST", "HEAD"},
-		AllowHeaders: {"Origin", "Accept", "Content-Type"},
+func NewCors() *Cors {
+	return &Cors{
+		AllowOrigins: []string{"*"},
+		AllowMethods: []string{"GET", "POST", "HEAD"},
+		AllowHeaders: []string{"Origin", "Accept", "Content-Type"},
 		AllowCredentials: false,
 		MaxAge: 12 * time.Hour,
 	}
 }
 
-func (c *cors) Middleware() mel.Handler {
+func (c *Cors) Middleware() mel.Handler {
+    c.validateAllowOrigins()
+
+	c.normalHeaders = c.generateNormalHeaders()
+	c.preflightHeaders = c.generatePreflightHeaders()
+
+	return func(ctx *mel.Context) {
+		origin := ctx.Request.Header.Get("Origin")
+		if len(origin) == 0 { // request is not a CORS request
+			return
+		}
+		if !c.validateOrigin(origin) {
+			ctx.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+
+		if ctx.Request.Method == "OPTIONS" {
+			for key, value := range c.preflightHeaders {
+				ctx.Header(key, value[0])
+			}
+			defer ctx.AbortWithStatus(http.StatusOK)
+		} else {
+			for key, value := range c.normalHeaders {
+				ctx.Header(key, value[0])
+			}
+		}
+
+		if !c.allowAllOrigins && !c.AllowCredentials {
+			ctx.Header("Access-Control-Allow-Origin", origin)
+		}
+
+		ctx.Next()
+	}
+}
+
+func (c *Cors) validateAllowOrigins() {
 	c.AllowOrigins = c.normalizeStrs(c.AllowOrigins)
 	if len(c.AllowOrigins) == 1 && c.AllowOrigins[0] == "*" {
 		c.allowAllOrigins = true
@@ -75,40 +110,9 @@ func (c *cors) Middleware() mel.Handler {
 	} else if c.AllowOriginFunc == nil {
 		panic("No origin is allowed")
 	}
-
-	c.normalHeaders = c.generateNormalHeaders()
-	c.preflightHeaders = c.generatePreflightHeaders()
-
-	return func(ctx *mel.Context) {
-		origin := ctx.Request.Header.Get("Origin")
-		if len(origin) == 0 { // request is not a CORS request
-			return
-		}
-		if !c.validateOrigin(origin) {
-			ctx.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-
-		if ctx.Request.Method == "OPTIONS" {
-			for key, value := range c.preflightHeaders {
-				ctx.Header(key, value)
-			}
-			defer ctx.AbortWithStatus(http.StatusOK)
-		} else {
-			for key, value := range c.normalHeaders {
-				ctx.Header(key, value)
-			}
-		}
-
-		if !c.allowAllOrigins && !c.AllowCredentials {
-			ctx.Header("Access-Control-Allow-Origin", origin)
-		}
-
-		ctx.Next()
-	}
 }
 
-func (c *cors) validateOrigin(origin string) bool {
+func (c *Cors) validateOrigin(origin string) bool {
 	if c.allowAllOrigins {
 		return true
 	}
@@ -123,7 +127,7 @@ func (c *cors) validateOrigin(origin string) bool {
 	return false
 }
 
-func (c *cors) normalizeStrs(strs []string) []string {
+func (c *Cors) normalizeStrs(strs []string) []string {
 	if strs == nil {
 		return nil
 	}
@@ -140,7 +144,7 @@ func (c *cors) normalizeStrs(strs []string) []string {
 	return normalized
 }
 
-func (c *cors) generateNormalHeaders() http.Header {
+func (c *Cors) generateNormalHeaders() http.Header {
 	headers := make(http.Header)
 	if c.AllowCredentials {
 		headers.Set("Access-Control-Allow-Credentials", "true")
@@ -157,7 +161,7 @@ func (c *cors) generateNormalHeaders() http.Header {
 	return headers
 }
 
-func (c *cors) generatePreflightHeaders() http.Header {
+func (c *Cors) generatePreflightHeaders() http.Header {
 	headers := make(http.Header)
 	if c.AllowCredentials {
 		headers.Set("Access-Control-Allow-Credentials", "true")
@@ -187,7 +191,7 @@ func (c *cors) generatePreflightHeaders() http.Header {
 	return headers
 }
 
-func (c *cors) convert(strs []string, f func(string) string) []string {
+func (c *Cors) convert(strs []string, f func(string) string) []string {
 	var result []string
 	for _, str := range strs {
 		result = append(result, f(str))
