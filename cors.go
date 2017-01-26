@@ -10,6 +10,8 @@ import (
 
 type cors struct {
 	// AllowedOrigins is a slice of origins that a cors request can be executed from.
+	// An origin may contain a wildcard (*) to replace 0 or more characters
+	// (e.g., http://*.domain.com). Only one wildcard can be used per origin.
 	// Default value is ["*"], i.e., all origins are allowed.
 	AllowOrigins []string
 
@@ -20,12 +22,12 @@ type cors struct {
 
 	// AllowedMethods is a slice of methods the client is allowed to use with
 	// cross-domain requests.
-	// Default to {"GET", "POST", "PUT", "HEAD"}.
+	// Default to {"GET", "POST", "HEAD"}.
 	AllowMethods []string
 
 	// AllowedHeaders is slice of non simple headers the client is allowed to use with
 	// cross-domain requests.
-	// Default to {"Origin", "Content-Length", "Content-Type"}.
+	// Default to {"Origin", "Accept", "Content-Type"}.
 	AllowHeaders []string
 
 	// AllowCredentials indicates whether the request can include user credentials like
@@ -48,14 +50,14 @@ type cors struct {
 func Cors() *cors {
 	return &cors{
 		AllowOrigins: {"*"},
-		AllowMethods: {"GET", "POST", "PUT", "HEAD"},
-		AllowHeaders: {"Origin", "Content-Length", "Content-Type"},
+		AllowMethods: {"GET", "POST", "HEAD"},
+		AllowHeaders: {"Origin", "Accept", "Content-Type"},
 		AllowCredentials: false,
 		MaxAge: 12 * time.Hour,
 	}
 }
 
-func CorsMiddleware(c *cors) mel.Handler {
+func (c *cors) Middleware() mel.Handler {
 	c.AllowOrigins = c.normalizeStrs(c.AllowOrigins)
 	if len(c.AllowOrigins) == 1 && c.AllowOrigins[0] == "*" {
 		c.allowAllOrigins = true
@@ -91,7 +93,7 @@ func CorsMiddleware(c *cors) mel.Handler {
 			for key, value := range c.preflightHeaders {
 				ctx.Header(key, value)
 			}
-			defer ctx.AbortWithStatus(200)
+			defer ctx.AbortWithStatus(http.StatusOK)
 		} else {
 			for key, value := range c.normalHeaders {
 				ctx.Header(key, value)
@@ -101,6 +103,8 @@ func CorsMiddleware(c *cors) mel.Handler {
 		if !c.allowAllOrigins && !c.AllowCredentials {
 			ctx.Header("Access-Control-Allow-Origin", origin)
 		}
+
+		ctx.Next()
 	}
 }
 
@@ -125,12 +129,12 @@ func (c *cors) normalizeStrs(strs []string) []string {
 	}
 	set := make(map[string]bool)
 	var normalized []string
-	for _, strs := range strs {
-		strs = strings.TrimSpace(strs)
-		strs = strings.ToLower(strs)
-		if _, seen := set[strs]; !seen {
-			normalized = append(normalized, strs)
-			set[strs] = true
+	for _, str := range strs {
+		str = strings.TrimSpace(str)
+		str = strings.ToLower(str)
+		if _, seen := set[str]; !seen {
+			normalized = append(normalized, str)
+			set[str] = true
 		}
 	}
 	return normalized
@@ -172,10 +176,10 @@ func (c *cors) generatePreflightHeaders() http.Header {
 	if c.allowAllOrigins {
 		headers.Set("Access-Control-Allow-Origin", "*")
 	} else {
-		// Always set Vary headers
-		// see https://github.com/rs/cors/issues/10,
-		// https://github.com/rs/cors/commit/dbdca4d95feaa7511a46e6f1efb3b3aa505bc43f#commitcomment-12352001
-
+		// If the server specifies an origin host rather than "*",
+		// then it could also include Origin in the Vary response header
+		// to indicate to clients that server responses will differ based
+		// on the value of the Origin request header.
 		headers.Add("Vary", "Origin")
 		headers.Add("Vary", "Access-Control-Request-Method")
 		headers.Add("Vary", "Access-Control-Request-Headers")
