@@ -9,7 +9,7 @@ import (
 const ConfigKey = "Config"
 
 type config struct {
-	viper.Viper
+	*viper.Viper
 }
 
 // Config returns the config for a Mel instance.
@@ -44,7 +44,7 @@ func (c *config) ReadFile(configFile string) error {
 }
 
 // ReadDirs reads config from a found file named as configName in several directories.
-func (c *config) ReadDirs(configName string, dirs ...string) {
+func (c *config) ReadDirs(configName string, dirs ...string) error {
 	c.SetConfigName(configName)
 	for _, dir := range dirs {
 		c.AddConfigPath(dir)
