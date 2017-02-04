@@ -28,7 +28,7 @@ func DB(mel *mel.Mel) *sql.DB {
 	db.SetMaxIdleConns(dbConfig.GetInt("max_idle_conns"))
 	db.SetMaxOpenConns(dbConfig.GetInt("max_open_conns"))
 
-    // Send a ping to make sure the database connection is alive.
+	// Send a ping to make sure the database connection is alive.
 	err = db.Ping()
 	if err != nil {
 		db.Close()
