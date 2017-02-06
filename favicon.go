@@ -50,12 +50,11 @@ func Favicon(path string, maxAge ...int) mel.Handler {
 		c.Header("Cache-Control", "public, max-age=" + strconv.Itoa(age))
 
 		body := favicon
-		if match, ok := req.Header["If-None-Match"]; ok {
-			if match[0] == etag {
-				c.Writer.WriteHeader(http.StatusNotModified)
-				body = []byte{}
-			}
-		} else {
+		ifNoneMatch := req.Header.Get("If-None-Match")
+		if ifNoneMatch == etag {
+			c.Writer.WriteHeader(http.StatusNotModified)
+			body = []byte{}
+		} else if len(ifNoneMatch) == 0{
 			c.Header("ETag", etag)
 		}
 
