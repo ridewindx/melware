@@ -2,7 +2,7 @@ package melware
 
 import (
 	"github.com/ridewindx/mel"
-	"gopkg.in/dgrijalva/jwt-go.v3"
+	"github.com/dgrijalva/jwt-go"
 	"net/http"
 	"strings"
 	"time"
@@ -35,7 +35,7 @@ type JWT struct {
 	// MaxRefresh specifies the maximum duration in which the client can refresh its token.
 	// This means that the maximum validity timespan for a token is MaxRefresh + Timeout.
 	// Optional. Defaults to 0 meaning not refreshable.
-	MaxRefresh   time.Duration
+	MaxRefresh time.Duration
 
 	// Authenticate specifies the callback that should perform the authentication
 	// of the user based on userID and password.
@@ -47,14 +47,14 @@ type JWT struct {
 	// of the authenticated user.
 	// Must return true on success, false on failure.
 	// Optional. Default to always return success.
-	Authorize    func(userID string, c *mel.Context) bool
+	Authorize func(userID string, c *mel.Context) bool
 
 	// PayloadFunc specifies the callback that will be called during login.
 	// It is useful for adding additional payload data to the token.
 	// The data is then made available during requests via ExtractClaims(PayloadKey).
 	// Note that the payload is not encrypted.
 	// Optional. By default no additional payload will be added.
-	PayloadFunc  func(userID string) map[string]interface{}
+	PayloadFunc func(userID string) map[string]interface{}
 
 	// Unauthorized specifies the unauthorized function.
 	Unauthorized func(*mel.Context, int, string)
@@ -66,7 +66,7 @@ type JWT struct {
 	// - "header:<name>"
 	// - "query:<name>"
 	// - "cookie:<name>"
-	TokenBearer  string
+	TokenBearer string
 
 	// PayloadKey specifies the key when puts JWT payload into Context.
 	// Optional. Default to "JWT_PAYLOAD".
@@ -76,11 +76,11 @@ type JWT struct {
 }
 
 func (j *JWT) init() {
-	if len(j.Realm) == 0 {
-		panic("Realm is required")
+	if j.Realm == "" {
+		j.Realm = "Authorization Required"
 	}
 
-	if len(j.SigningAlgorithm) == 0 {
+	if j.SigningAlgorithm == "" {
 		j.SigningAlgorithm = "HS256"
 	}
 
@@ -105,7 +105,7 @@ func (j *JWT) init() {
 	if j.Unauthorized == nil {
 		j.Unauthorized = func(c *mel.Context, code int, message string) {
 			c.JSON(code, mel.Map{
-				"code": code,
+				"code":    code,
 				"message": message,
 			})
 		}
@@ -241,7 +241,7 @@ func (j *JWT) LoginHandler() mel.Handler {
 		}
 
 		c.JSON(http.StatusOK, mel.Map{
-			"token":  tokenStr,
+			"token":      tokenStr,
 			"expires_at": expire.Format(time.RFC3339),
 		})
 	}
@@ -262,7 +262,7 @@ func (j *JWT) RefreshHandler(c *mel.Context) {
 		return
 	}
 
-    // Refresh expiration time
+	// Refresh expiration time
 	expire := time.Now().Add(j.Timeout)
 	claims["exp"] = expire.Unix()
 
@@ -277,7 +277,7 @@ func (j *JWT) RefreshHandler(c *mel.Context) {
 	}
 
 	c.JSON(http.StatusOK, mel.Map{
-		"token":  tokenStr,
+		"token":      tokenStr,
 		"expires_at": expire.Format(time.RFC3339),
 	})
 }
