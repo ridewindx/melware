@@ -34,7 +34,7 @@ func Zap(logger *zap.SugaredLogger) mel.Handler {
 		if len(c.Errors) > 0 {
 			// Append error string if this is an erroneous request.
 			logger.Errorw(c.Errors.String(), fields...)
-		}
+		} else {
 			logger.Debugw("", fields...)
 		}
 	}
