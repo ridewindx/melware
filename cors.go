@@ -1,200 +1,76 @@
 package melware
 
 import (
-	"time"
-	"strings"
 	"net/http"
-	"fmt"
+	"github.com/rs/cors"
 	"github.com/ridewindx/mel"
 )
 
 type Cors struct {
-	// AllowedOrigins is a slice of origins that a cors request can be executed from.
+	// AllowedOrigins is a list of origins a cross-domain request can be executed from.
+	// If the special "*" value is present in the list, all origins will be allowed.
 	// An origin may contain a wildcard (*) to replace 0 or more characters
-	// (e.g., http://*.domain.com). Only one wildcard can be used per origin.
-	// Default value is ["*"], i.e., all origins are allowed.
-	AllowOrigins []string
-
+	// (i.e.: http://*.domain.com). Usage of wildcards implies a small performance penalty.
+	// Only one wildcard can be used per origin.
+	// Default value is ["*"]
+	AllowedOrigins []string
 	// AllowOriginFunc is a custom function to validate the origin. It take the origin
-	// as argument and returns true if allowed or false otherwise.
-	// It has lower precedence than AllowOrigins.
+	// as argument and returns true if allowed or false otherwise. If this option is
+	// set, the content of AllowedOrigins is ignored.
 	AllowOriginFunc func(origin string) bool
-
-	// AllowedMethods is a slice of methods the client is allowed to use with
+	// AllowedMethods is a list of methods the client is allowed to use with
+	// cross-domain requests. Default value is simple methods (HEAD, GET and POST).
+	AllowedMethods []string
+	// AllowedHeaders is list of non simple headers the client is allowed to use with
 	// cross-domain requests.
-	// Default to {"GET", "POST", "HEAD"}.
-	AllowMethods []string
-
-	// AllowedHeaders is slice of non simple headers the client is allowed to use with
-	// cross-domain requests.
-	// Default to {"Origin", "Accept", "Content-Type"}.
-	AllowHeaders []string
-
+	// If the special "*" value is present in the list, all headers will be allowed.
+	// Default value is [] but "Origin" is always appended to the list.
+	AllowedHeaders []string
+	// ExposedHeaders indicates which headers are safe to expose to the API of a CORS
+	// API specification
+	ExposedHeaders []string
 	// AllowCredentials indicates whether the request can include user credentials like
 	// cookies, HTTP authentication or client side SSL certificates.
 	AllowCredentials bool
-
-	// ExposedHeaders indicates which headers are safe to expose to the API of a CORS
-	// API specification
-	ExposeHeaders []string
-
 	// MaxAge indicates how long (in seconds) the results of a preflight request
 	// can be cached
-	MaxAge time.Duration
+	MaxAge int
+	// OptionsPassthrough instructs preflight to let other potential next handlers to
+	// process the OPTIONS method. Turn this on if your application handles OPTIONS.
+	OptionsPassthrough bool
+	// Debugging flag adds additional output to debug server side CORS issues
+	Debug bool
 
-	allowAllOrigins bool
-	normalHeaders    http.Header
-	preflightHeaders http.Header
+	*cors.Cors
 }
 
-func NewCors() *Cors {
+func CorsAllowAll() *Cors {
 	return &Cors{
-		AllowOrigins: []string{"*"},
-		AllowMethods: []string{"GET", "POST", "HEAD"},
-		AllowHeaders: []string{"Origin", "Accept", "Content-Type"},
-		AllowCredentials: false,
-		MaxAge: 12 * time.Hour,
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"HEAD", "GET", "POST", "PUT", "PATCH", "DELETE"},
+		AllowedHeaders:   []string{"*"},
+		AllowCredentials: true,
 	}
 }
 
 func (c *Cors) Middleware() mel.Handler {
-    c.validateAllowOrigins()
-
-	c.normalHeaders = c.generateNormalHeaders()
-	c.preflightHeaders = c.generatePreflightHeaders()
+	if c.Cors == nil {
+		c.Cors = cors.New(cors.Options{
+			AllowedOrigins: c.AllowedOrigins,
+			AllowOriginFunc: c.AllowOriginFunc,
+			AllowedMethods: c.AllowedMethods,
+			AllowedHeaders: c.AllowedHeaders,
+			ExposedHeaders: c.ExposedHeaders,
+			AllowCredentials: c.AllowCredentials,
+			MaxAge: c.MaxAge,
+			OptionsPassthrough: c.OptionsPassthrough,
+			Debug: c.Debug,
+		})
+	}
 
 	return func(ctx *mel.Context) {
-		origin := ctx.Request.Header.Get("Origin")
-		if len(origin) == 0 { // request is not a CORS request
-			return
-		}
-		if !c.validateOrigin(origin) {
-			ctx.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-
-		if ctx.Request.Method == "OPTIONS" {
-			for key, value := range c.preflightHeaders {
-				ctx.Header(key, value[0])
-			}
-			defer ctx.AbortWithStatus(http.StatusOK)
-		} else {
-			for key, value := range c.normalHeaders {
-				ctx.Header(key, value[0])
-			}
-		}
-
-		if !c.allowAllOrigins && !c.AllowCredentials {
-			ctx.Header("Access-Control-Allow-Origin", origin)
-		}
-
-		ctx.Next()
+		c.ServeHTTP(ctx.Writer, ctx.Request, func(writer http.ResponseWriter, request *http.Request) {
+			ctx.Next()
+		})
 	}
-}
-
-func (c *Cors) validateAllowOrigins() {
-	c.AllowOrigins = c.normalizeStrs(c.AllowOrigins)
-	if len(c.AllowOrigins) == 1 && c.AllowOrigins[0] == "*" {
-		c.allowAllOrigins = true
-		if c.AllowOriginFunc != nil {
-			panic("All origins are allowed, no predicate function needed")
-		}
-	} else if len(c.AllowOrigins) > 0 {
-		for _, origin := range c.AllowOrigins {
-			if origin == "*" {
-				panic("All origins for cors are allowed, no individual origins needed")
-			} else if !strings.HasPrefix(origin, "http://") && !strings.HasPrefix(origin, "https://") {
-				panic("Origin must have prefix 'http://' or 'https://'")
-			}
-		}
-	} else if c.AllowOriginFunc == nil {
-		panic("No origin is allowed")
-	}
-}
-
-func (c *Cors) validateOrigin(origin string) bool {
-	if c.allowAllOrigins {
-		return true
-	}
-	for _, value := range c.AllowOrigins {
-		if value == origin {
-			return true
-		}
-	}
-	if c.AllowOriginFunc != nil {
-		return c.AllowOriginFunc(origin)
-	}
-	return false
-}
-
-func (c *Cors) normalizeStrs(strs []string) []string {
-	if strs == nil {
-		return nil
-	}
-	set := make(map[string]bool)
-	var normalized []string
-	for _, str := range strs {
-		str = strings.TrimSpace(str)
-		str = strings.ToLower(str)
-		if _, seen := set[str]; !seen {
-			normalized = append(normalized, str)
-			set[str] = true
-		}
-	}
-	return normalized
-}
-
-func (c *Cors) generateNormalHeaders() http.Header {
-	headers := make(http.Header)
-	if c.AllowCredentials {
-		headers.Set("Access-Control-Allow-Credentials", "true")
-	}
-	if len(c.ExposeHeaders) > 0 {
-		exposeHeaders := c.convert(c.normalizeStrs(c.ExposeHeaders), http.CanonicalHeaderKey)
-		headers.Set("Access-Control-Expose-Headers", strings.Join(exposeHeaders, ","))
-	}
-	if c.allowAllOrigins {
-		headers.Set("Access-Control-Allow-Origin", "*")
-	} else {
-		headers.Set("Vary", "Origin")
-	}
-	return headers
-}
-
-func (c *Cors) generatePreflightHeaders() http.Header {
-	headers := make(http.Header)
-	if c.AllowCredentials {
-		headers.Set("Access-Control-Allow-Credentials", "true")
-	}
-	if len(c.AllowMethods) > 0 {
-		allowMethods := c.convert(c.normalizeStrs(c.AllowMethods), strings.ToUpper)
-		headers.Set("Access-Control-Allow-Methods", strings.Join(allowMethods, ","))
-	}
-	if len(c.AllowHeaders) > 0 {
-		allowHeaders := c.convert(c.normalizeStrs(c.AllowHeaders), http.CanonicalHeaderKey)
-		headers.Set("Access-Control-Allow-Headers", strings.Join(allowHeaders, ","))
-	}
-	if c.MaxAge > time.Duration(0) {
-		headers.Set("Access-Control-Max-Age", fmt.Sprintf("%d", c.MaxAge/time.Second))
-	}
-	if c.allowAllOrigins {
-		headers.Set("Access-Control-Allow-Origin", "*")
-	} else {
-		// If the server specifies an origin host rather than "*",
-		// then it could also include Origin in the Vary response header
-		// to indicate to clients that server responses will differ based
-		// on the value of the Origin request header.
-		headers.Add("Vary", "Origin")
-		headers.Add("Vary", "Access-Control-Request-Method")
-		headers.Add("Vary", "Access-Control-Request-Headers")
-	}
-	return headers
-}
-
-func (c *Cors) convert(strs []string, f func(string) string) []string {
-	var result []string
-	for _, str := range strs {
-		result = append(result, f(str))
-	}
-	return result
 }
