@@ -33,7 +33,6 @@ type JWT struct {
 	Timeout time.Duration
 
 	// MaxRefresh specifies the maximum duration in which the client can refresh its token.
-	// This means that the maximum validity timespan for a token is MaxRefresh + Timeout.
 	// Optional. Defaults to 0 meaning not refreshable.
 	MaxRefresh time.Duration
 
@@ -180,7 +179,7 @@ func (j *JWT) Middleware() mel.Handler {
 		c.Set("userID", userId)
 
 		if !j.Authorize(userId, c) {
-			j.unauthorized(c, http.StatusForbidden, "You don't have permission to access.")
+			j.unauthorized(c, http.StatusForbidden, "You don't have permission to access")
 			return
 		}
 
@@ -219,7 +218,7 @@ func (j *JWT) LoginHandler() mel.Handler {
 		tokenStr, err := token.SignedString(j.Key)
 
 		if err != nil {
-			j.unauthorized(c, http.StatusUnauthorized, "Create JWT token faild")
+			j.unauthorized(c, http.StatusUnauthorized, "Create JWT token failed")
 			return
 		}
 
@@ -238,10 +237,10 @@ func (j *JWT) RefreshHandler(c *mel.Context) {
 	token, _ := j.parseToken(c)
 	claims := token.Claims.(jwt.MapClaims)
 
-	iat := int64(claims["iat"].(int64))
+	exp := int64(claims["exp"].(float64))
 
-	if iat < time.Now().Add(-j.MaxRefresh).Unix() {
-		j.unauthorized(c, http.StatusUnauthorized, "Token is expired")
+	if exp < time.Now().Add(j.MaxRefresh).Unix() {
+		j.unauthorized(c, http.StatusUnauthorized, "Token exceeded refresh time limit")
 		return
 	}
 
@@ -255,7 +254,7 @@ func (j *JWT) RefreshHandler(c *mel.Context) {
 
 	tokenStr, err := newToken.SignedString(j.Key)
 	if err != nil {
-		j.unauthorized(c, http.StatusUnauthorized, "Create JWT Token faild")
+		j.unauthorized(c, http.StatusUnauthorized, "Create JWT Token failed")
 		return
 	}
 
