@@ -17,7 +17,7 @@ import (
 // the Authentication header.
 type JWT struct {
 	// Realm specifies the realm name to display to the user.
-	// Required.
+	// Optional.
 	Realm string
 
 	// SigningAlgorithm specifies signing algorithm.
@@ -38,10 +38,10 @@ type JWT struct {
 	MaxRefresh time.Duration
 
 	// Authenticate specifies the callback that should perform the authentication
-	// of the user based on userID and password.
-	// Must return true on success, false on failure.
-	// Required. Option return user id, if so, user id will be stored in Claim Array.
-	Authenticate func(userID string, password string, c *mel.Context) (string, bool)
+	// of the user based on request context.
+	// Must return nil error on success, error on failure.
+	// Required. Optional return user id, if so, user id will be stored in Claim Array.
+	Authenticate func(c *mel.Context) (string, error)
 
 	// Authorize specifies the callback that should perform the authorization
 	// of the authenticated user.
@@ -76,10 +76,6 @@ type JWT struct {
 }
 
 func (j *JWT) init() {
-	if j.Realm == "" {
-		j.Realm = "Authorization Required"
-	}
-
 	if j.SigningAlgorithm == "" {
 		j.SigningAlgorithm = "HS256"
 	}
@@ -111,6 +107,10 @@ func (j *JWT) init() {
 		}
 	}
 
+	if j.TokenBearer == "" {
+		j.TokenBearer = "header:Authorization"
+	}
+
 	parts := strings.Split(j.TokenBearer, ":")
 	key := parts[1]
 	switch parts[0] {
@@ -119,12 +119,12 @@ func (j *JWT) init() {
 			authHeader := c.Request.Header.Get(key)
 
 			if len(authHeader) == 0 {
-				return "", errors.New("Empty auth header")
+				return "", errors.New("empty auth header")
 			}
 
 			parts := strings.SplitN(authHeader, " ", 2)
 			if !(len(parts) == 2 && parts[0] == "Bearer") {
-				return "", errors.New("Invalid auth header")
+				return "", errors.New("invalid auth header")
 			}
 
 			return parts[1], nil
@@ -135,7 +135,7 @@ func (j *JWT) init() {
 			token := c.Query(key)
 
 			if len(token) == 0 {
-				return "", errors.New("Empty query token")
+				return "", errors.New("empty query token")
 			}
 
 			return token, nil
@@ -146,7 +146,7 @@ func (j *JWT) init() {
 			cookie, _ := c.Cookie(key)
 
 			if len(cookie) == 0 {
-				return "", errors.New("Empty cookie token")
+				return "", errors.New("empty cookie token")
 			}
 
 			return cookie, nil
@@ -190,27 +190,14 @@ func (j *JWT) Middleware() mel.Handler {
 }
 
 // LoginHandler can be used by clients to get a jwt token.
-// Payload needs to be json in the form of {"username": "USERNAME", "password": "PASSWORD"}.
 // Reply will be of the form {"token": "TOKEN"}.
 func (j *JWT) LoginHandler() mel.Handler {
 	j.init()
 
 	return func(c *mel.Context) {
-		type Login struct {
-			Username string `form:"username" json:"username" binding:"required"`
-			Password string `form:"password" json:"password" binding:"required"`
-		}
-
-		var login Login
-
-		if c.BindJSON(&login) != nil {
-			j.unauthorized(c, http.StatusBadRequest, "Missing username or password")
-			return
-		}
-
-		userID, ok := j.Authenticate(login.Username, login.Password, c)
-		if !ok {
-			j.unauthorized(c, http.StatusUnauthorized, "Invalid Username / Password")
+		userID, err := j.Authenticate(c)
+		if err != nil {
+			j.unauthorized(c, http.StatusUnauthorized, err.Error())
 			return
 		}
 
@@ -219,13 +206,9 @@ func (j *JWT) LoginHandler() mel.Handler {
 		claims := token.Claims.(jwt.MapClaims)
 
 		if j.PayloadFunc != nil {
-			for key, value := range j.PayloadFunc(login.Username) {
+			for key, value := range j.PayloadFunc(userID) {
 				claims[key] = value
 			}
-		}
-
-		if len(userID) == 0 {
-			userID = login.Username
 		}
 
 		expire := time.Now().Add(j.Timeout)
@@ -301,7 +284,7 @@ func (j *JWT) parseToken(c *mel.Context) (*jwt.Token, error) {
 
 	return jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if jwt.GetSigningMethod(j.SigningAlgorithm) != token.Method {
-			return nil, errors.New("Invalid signing algorithm")
+			return nil, errors.New("invalid signing algorithm")
 		}
 
 		return j.Key, nil
