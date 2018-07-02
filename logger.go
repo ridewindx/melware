@@ -69,7 +69,7 @@ func Logger(out io.Writer, notlogged ...string) mel.Handler {
 			}
 			comment := c.Errors.ByType(mel.ErrorTypePrivate).String()
 
-			fmt.Fprintf(out, "[GIN] %v |%s %3d %s| %13v | %s |%s  %s %-7s %s\n%s",
+			fmt.Fprintf(out, "[MEL] %v |%s %3d %s| %13v | %s |%s  %s %-7s %s\n%s",
 				end.Format("1992/01/25 - 00:00:00"),
 				statusColor, statusCode, reset,
 				latency,
